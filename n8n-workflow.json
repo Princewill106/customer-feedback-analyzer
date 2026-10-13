@@ -1,0 +1,186 @@
+{
+  "name": "Customer Feedback Analyzer (AI Automation Projects #11)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "5855499b-2326-5043-b544-b2e47535ef81",
+      "name": "Schedule (Mondays 8am)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "",
+          "mode": "list"
+        },
+        "options": {}
+      },
+      "id": "0ba812f8-1c26-5105-8cd6-91c52c105b15",
+      "name": "Read feedback sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "eae988da-86e1-5f98-8973-4c5549413c75",
+      "name": "Test with sample data",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sample data from this repo. Click 'Test workflow' to run the whole flow on it.\nconst sample = [\n {\n  \"source\": \"google\",\n  \"rating\": \"2\",\n  \"comment\": \"Delivery was late again and the rider was rude\"\n },\n {\n  \"source\": \"google\",\n  \"rating\": \"5\",\n  \"comment\": \"Food was fresh and the staff were friendly. Highly recommend\"\n },\n {\n  \"source\": \"instagram\",\n  \"rating\": \"1\",\n  \"comment\": \"Waited two hours for delivery. Terrible\"\n },\n {\n  \"source\": \"google\",\n  \"rating\": \"4\",\n  \"comment\": \"Great taste but a bit expensive\"\n },\n {\n  \"source\": \"whatsapp\",\n  \"rating\": \"2\",\n  \"comment\": \"The app checkout is broken and payment failed twice\"\n },\n {\n  \"source\": \"google\",\n  \"rating\": \"5\",\n  \"comment\": \"Excellent service and quick delivery today\"\n },\n {\n  \"source\": \"google\",\n  \"rating\": \"3\",\n  \"comment\": \"Food was not good this time and it arrived cold\"\n },\n {\n  \"source\": \"instagram\",\n  \"rating\": \"2\",\n  \"comment\": \"Delivery delayed and nobody called me\"\n },\n {\n  \"source\": \"google\",\n  \"rating\": \"4\",\n  \"comment\": \"Affordable and nice portions\"\n },\n {\n  \"source\": \"whatsapp\",\n  \"rating\": \"1\",\n  \"comment\": \"Wrong order delivered and the attendant was rude on the phone\"\n }\n];\nreturn sample.map(json => ({ json }));"
+      },
+      "id": "defd0cbd-aa46-5df1-88fe-298eeb235af1",
+      "name": "Sample data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Customer Feedback Analyzer: core logic (ported from main.py)\n\n// ---- input normaliser (works for Webhook, Form, WhatsApp, Gmail, Sheets and sample data)\nconst input = $input.all().flatMap(i => {\n  const j = i.json || {};\n  if (j.messages && Array.isArray(j.messages)) {           // WhatsApp Trigger\n    return j.messages.filter(m => m.text).map(m => ({ from: '+' + m.from, text: m.text.body }));\n  }\n  if (j.Subject !== undefined || j.From !== undefined) {     // Gmail Trigger (simple)\n    return [{ from: (j.From || '').replace(/.*<|>.*/g, ''), subject: j.Subject || '', body: j.snippet || j.text || '' }];\n  }\n  const b = (j.body !== undefined && j.headers !== undefined) ? j.body : j;   // Webhook wraps payload in body\n  if (Array.isArray(b)) return b;\n  if (b && Array.isArray(b.items)) return b.items;\n  return [b];\n});\n\nconst POS = new Set('good great excellent love fast friendly fresh clean amazing helpful affordable nice perfect recommend quick polite'.split(' '));\nconst NEG = new Set('bad slow late rude expensive cold dirty poor terrible wrong never worst delayed broken overpriced stale waited'.split(' '));\nconst NOT = new Set(['not', 'no', 'never', \"isn't\", \"wasn't\", \"didn't\", \"don't\"]);\nconst THEMES = { delivery: ['delivery', 'deliver', 'rider', 'late', 'delayed', 'arrived', 'waited'], price: ['price', 'expensive', 'cheap', 'affordable', 'overpriced', 'cost'],\n  quality: ['quality', 'fresh', 'stale', 'taste', 'broken', 'cold', 'food'], staff: ['staff', 'rude', 'friendly', 'polite', 'attendant', 'service'],\n  'app/ordering': ['app', 'website', 'order', 'checkout', 'payment'] };\nconst sentiment = t => { const w = t.toLowerCase().match(/[a-z']+/g) || []; let s = 0, h = 0;\n  w.forEach((x, i) => { let v = POS.has(x) ? 1 : NEG.has(x) ? -1 : 0; if (v && i && NOT.has(w[i - 1])) v = -v; if (v) { s += v; h++; } });\n  return h ? s / h : 0; };\nconst agg = {}; let total = 0;\nfor (const r of input) {\n  const s = sentiment(r.comment); total += s;\n  for (const [th, ws] of Object.entries(THEMES)) if (ws.some(w => r.comment.toLowerCase().includes(w))) {\n    agg[th] = agg[th] || { n: 0, s: 0, quotes: [] }; agg[th].n++; agg[th].s += s; if (s < 0) agg[th].quotes.push(r.comment); }\n}\nconst ranked = Object.entries(agg).map(([t, v]) => ({ theme: t, mentions: v.n, avg: Math.round(v.s / v.n * 100) / 100,\n  impact: Math.round(v.n * Math.max(0, -v.s / v.n) * 100) / 100, quote: v.quotes[0] || '' })).sort((a, b) => b.impact - a.impact);\nconst report = `Comments: ${input.length}, overall sentiment ${(total / input.length).toFixed(2)} (-1 to +1)\\n\\nFix first:\\n` +\n  ranked.map(r => `- ${r.theme}: ${r.mentions} mentions, sentiment ${r.avg}${r.quote ? ` - \"${r.quote}\"` : ''}`).join('\\n');\nreturn [{ json: { top_issue: ranked[0] && ranked[0].theme, report, themes: ranked } }];\n"
+      },
+      "id": "8e943613-6d01-51b5-bd9b-bd48d040a430",
+      "name": "Logic",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "manager@yourbusiness.com",
+        "subject": "=Customer feedback: fix {{ $json.top_issue }} first",
+        "emailType": "text",
+        "message": "={{ $json.report }}",
+        "options": {}
+      },
+      "id": "e5ae85d8-2801-500f-bf78-ae834290abbb",
+      "name": "Email the report",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        720,
+        120
+      ],
+      "webhookId": "e5ae85d8-2801-500f-bf78-ae834290abbb"
+    },
+    {
+      "parameters": {
+        "content": "## Customer Feedback Analyzer\nHundreds of reviews in, a one-page 'what to fix first' report out.\n\nEvery Monday it reads collected reviews (source, rating, comment), scores sentiment with negation handling, tags themes (delivery, price, quality, staff, ordering) and sends a ranked 'fix first' report.\n\n**Try it:** click *Test workflow* to run on the sample data. Then connect your credentials on the output nodes and activate.\n\nCode and docs: github.com/Princewill106/customer-feedback-analyzer",
+        "height": 340,
+        "width": 420,
+        "color": 5
+      },
+      "id": "6d66ea56-c0ff-51a9-b2e6-e906da615d11",
+      "name": "About this workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -460
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule (Mondays 8am)": {
+      "main": [
+        [
+          {
+            "node": "Read feedback sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Test with sample data": {
+      "main": [
+        [
+          {
+            "node": "Sample data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read feedback sheet": {
+      "main": [
+        [
+          {
+            "node": "Logic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sample data": {
+      "main": [
+        [
+          {
+            "node": "Logic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Logic": {
+      "main": [
+        [
+          {
+            "node": "Email the report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}
